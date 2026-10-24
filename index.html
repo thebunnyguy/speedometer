@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GPS Speedometer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="GPS speedometer for iPhone with Doppler-accurate speed, trip stats, a speed alert and a windshield HUD mode.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Speedometer">
+<meta name="theme-color" content="#0f0e0c">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="preload" href="fonts/barlow-condensed-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+@font-face{font-family:"Barlow Condensed";font-style:normal;font-weight:500;font-display:swap;src:url(fonts/barlow-condensed-latin-500-normal.woff2) format("woff2")}
+@font-face{font-family:"Barlow Condensed";font-style:normal;font-weight:600;font-display:swap;src:url(fonts/barlow-condensed-latin-600-normal.woff2) format("woff2")}
+@font-face{font-family:"Barlow";font-style:normal;font-weight:500;font-display:swap;src:url(fonts/barlow-latin-500-normal.woff2) format("woff2")}
+@font-face{font-family:"Barlow";font-style:normal;font-weight:600;font-display:swap;src:url(fonts/barlow-latin-600-normal.woff2) format("woff2")}
+
+/* Layout: a one-screen instrument cluster. Portrait stacks status, dial, trip and controls;
+   landscape (phone in a dash mount) puts the dial on the left. Night palette is the base. */
+:root{
+  --bg:#0f0e0c;          /* cab at night, warm black */
+  --surface:#1b1a17;     /* sheets and buttons */
+  --line:#34312b;        /* hairlines */
+  --track:#2b2924;       /* unlit part of the dial */
+  --ink:#f3f0e9;         /* digits and labels */
+  --muted:#a29c90;       /* secondary text, minor ticks */
+  --accent:#ffb547;      /* amber cluster backlight: the speed arc */
+  --on-accent:#0f0e0c;
+  --alert:#ff5446;       /* over the limit, blocked */
+  --status-band:#0f0e0c;
+  --sign-face:#ffffff;   /* a speed-limit sign is white in any light */
+  --sign-ink:#151515;
+  --hud-bg:#000000;      /* black reflects nothing in the windshield */
+  --hud-ink:#ffffff;
+  --shadow:rgba(0,0,0,.35);
+  --scrim:rgba(0,0,0,.55);
+  --font-display:"Barlow Condensed","Arial Narrow","Helvetica Neue",system-ui,sans-serif;
+  --font-ui:"Barlow","Helvetica Neue",-apple-system,system-ui,sans-serif;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f1f1ec;--surface:#ffffff;--line:#d5d3cb;--track:#dedcd4;--ink:#151412;--muted:#5d5950;
+    --accent:#a84f00;--on-accent:#ffffff;--alert:#cf2a1f;--status-band:#151412;--shadow:rgba(0,0,0,.12);
+    color-scheme:light;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f1f1ec;--surface:#ffffff;--line:#d5d3cb;--track:#dedcd4;--ink:#151412;--muted:#5d5950;
+  --accent:#a84f00;--on-accent:#ffffff;--alert:#cf2a1f;--status-band:#151412;--shadow:rgba(0,0,0,.12);
+  color-scheme:light;
+}
+
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{height:100%;margin:0}
+body{
+  background:var(--bg);color:var(--ink);
+  font:500 15px/1.35 var(--font-ui);
+  -webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent;
+  -webkit-user-select:none;user-select:none;
+  overscroll-behavior:none;touch-action:manipulation;
+}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;-webkit-appearance:none;appearance:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+
+.app{
+  height:100%;height:100dvh;
+  max-width:560px;margin:0 auto;
+  display:grid;
+  grid-template-rows:auto minmax(0,1fr) auto auto auto;
+  grid-template-areas:"top" "dial" "trip" "meta" "controls";
+  row-gap:12px;
+  padding-top:max(8px,env(safe-area-inset-top,0px));
+  padding-bottom:max(14px,env(safe-area-inset-bottom,0px));
+  padding-left:max(16px,env(safe-area-inset-left,0px));
+  padding-right:max(16px,env(safe-area-inset-right,0px));
+}
+
+/* status row */
+.top{grid-area:top;display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px}
+.gps{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--muted);font-variant-numeric:tabular-nums}
+.bars{display:inline-flex;align-items:flex-end;gap:2px;height:14px}
+.bars i{display:block;width:4px;border-radius:1px;background:var(--line)}
+.bars i:nth-child(1){height:5px}.bars i:nth-child(2){height:8px}.bars i:nth-child(3){height:11px}.bars i:nth-child(4){height:14px}
+.gps[data-q="1"] .bars i:nth-child(-n+1),
+.gps[data-q="2"] .bars i:nth-child(-n+2),
+.gps[data-q="3"] .bars i:nth-child(-n+3),
+.gps[data-q="4"] .bars i{background:var(--ink)}
+.gps.bad{color:var(--alert)}
+.gps.bad .bars i:first-child{background:var(--alert)}
+.chip{min-height:36px;padding:0 14px;border:1px solid var(--line);border-radius:18px;font-size:13px;font-weight:600;color:var(--muted)}
+
+/* dial */
+.dial-wrap{grid-area:dial;min-height:0;container-type:size;display:grid;place-items:center}
+.dial{position:relative;width:min(100%,58vh);width:min(100cqw,117.6cqh);aspect-ratio:400/340;max-width:100%;container-type:inline-size}
+.dial svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.track{fill:none;stroke:var(--track);stroke-width:12;stroke-linecap:round}
+.value{fill:none;stroke:var(--accent);stroke-width:12;stroke-dasharray:0 1000;transition:stroke .3s}
+.tick{stroke:var(--muted);stroke-width:2}
+.tick.major{stroke:var(--ink);stroke-width:3}
+.nums text{fill:var(--muted);font-family:var(--font-display);font-weight:500;font-size:20px;text-anchor:middle;dominant-baseline:central;font-variant-numeric:tabular-nums}
+.limit-mark{stroke:var(--alert);stroke-width:4;stroke-linecap:round}
+.max-mark{fill:var(--ink)}
+.tip{fill:var(--ink);stroke:var(--bg);stroke-width:3}
+/* the readout box is the dial's full square (400 units), centred on the arc's hub */
+.readout{position:absolute;left:0;right:0;top:0;height:117.65%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding-bottom:5cqw;pointer-events:none}
+.digits{
+  font-family:var(--font-display);font-weight:600;font-size:36cqw;line-height:.82;letter-spacing:-.01em;
+  font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;transition:color .3s,opacity .3s;
+}
+.digits.three{font-size:29cqw}
+.digits.four{font-size:22cqw}
+.unit{pointer-events:auto;margin-top:3.5cqw;min-height:40px;min-width:68px;padding:0 14px;border:1px solid var(--line);border-radius:20px;font-size:max(15px,4.2cqw);font-weight:600;color:var(--muted)}
+.heading{position:absolute;left:0;right:0;bottom:2%;text-align:center;font-size:max(13px,3.8cqw);font-weight:600;letter-spacing:.08em;color:var(--muted);font-variant-numeric:tabular-nums;transition:opacity .3s}
+.heading.dim{opacity:.4}
+.stale .digits,.stale .value,.stale .tip{opacity:.35}
+.over .value{stroke:var(--alert)}
+.over .digits{color:var(--alert)}
+
+/* trip */
+.trip{grid-area:trip;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.stat{display:flex;flex-direction:column;gap:3px;padding:10px 0 10px 12px;border-left:1px solid var(--line);min-width:0}
+.stat:first-child{border-left:0;padding-left:0}
+.label{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.val{font-family:var(--font-display);font-weight:600;font-size:26px;line-height:1.05;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.val small{font-family:var(--font-ui);font-weight:500;font-size:14px;color:var(--muted);margin-left:3px}
+.meta{grid-area:meta;margin:0;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);min-height:16px}
+.meta span:empty{display:none}
+
+/* controls */
+.controls{grid-area:controls;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.ctl{min-height:54px;padding:0 6px;border:1px solid var(--line);border-radius:14px;background:var(--surface);display:flex;align-items:center;justify-content:center;gap:6px;font-size:15px;font-weight:600;white-space:nowrap;transition:transform .1s,border-color .2s,color .2s}
+.ctl:active{transform:scale(.97)}
+.ctl.armed{border-color:var(--alert);color:var(--alert)}
+.ctl svg{width:22px;height:22px;flex:none}
+.sign{flex:none;width:28px;height:28px;border:3.5px solid var(--alert);border-radius:50%;background:var(--sign-face);color:var(--sign-ink);display:grid;place-items:center;font-family:var(--font-display);font-weight:600;font-size:12px;line-height:1;font-variant-numeric:tabular-nums}
+.sign.off{opacity:.45}
+.over .sign{animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{50%{transform:scale(1.14)}}
+
+/* sheets, banner, dialog */
+.sheet{
+  position:fixed;left:0;right:0;bottom:0;z-index:20;
+  background:var(--surface);border-top:1px solid var(--line);border-radius:22px 22px 0 0;
+  box-shadow:0 -18px 40px var(--shadow);
+  padding-top:22px;padding-bottom:max(22px,env(safe-area-inset-bottom,0px));
+  padding-left:max(20px,env(safe-area-inset-left,0px));padding-right:max(20px,env(safe-area-inset-right,0px));
+}
+.sheet-inner{max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+.sheet h1,dialog h2{margin:0;font-family:var(--font-display);font-weight:600;font-size:30px;line-height:1.05;text-wrap:balance}
+.sheet p{margin:0;color:var(--muted);max-width:60ch}
+.sheet ol{margin:0;padding-left:20px;display:grid;gap:6px}
+.sheet b{color:var(--ink);font-weight:600}
+.primary{min-height:54px;border-radius:14px;background:var(--accent);color:var(--on-accent);font-size:17px;font-weight:600}
+.hint{font-size:13px}
+.banner{
+  position:fixed;z-index:15;top:calc(env(safe-area-inset-top,0px) + 56px);
+  left:max(12px,env(safe-area-inset-left,0px));right:max(12px,env(safe-area-inset-right,0px));
+  max-width:536px;margin:0 auto;padding:12px 14px;
+  background:var(--surface);border:1px solid var(--alert);border-radius:14px;font-size:14px;text-align:left;
+  box-shadow:0 10px 30px var(--shadow);
+}
+.banner b{font-weight:600}
+dialog{width:min(420px,calc(100vw - 32px));padding:22px;border:1px solid var(--line);border-radius:22px;background:var(--surface);color:var(--ink)}
+dialog::backdrop{background:var(--scrim)}
+dialog form{display:flex;flex-direction:column;gap:14px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:48px}
+.switch{flex:none;margin:0;width:52px;height:32px;border-radius:16px;background:var(--line);position:relative;-webkit-appearance:none;appearance:none;cursor:pointer;transition:background .2s}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:26px;height:26px;border-radius:50%;background:var(--sign-face);box-shadow:0 1px 3px var(--shadow);transition:transform .2s}
+.switch:checked{background:var(--accent)}
+.switch:checked::after{transform:translateX(20px)}
+.stepper{display:grid;grid-template-columns:56px minmax(0,1fr) 56px;align-items:center;gap:10px}
+.stepper button{height:56px;border:1px solid var(--line);border-radius:14px;font-size:28px;font-weight:500}
+.stepper output{text-align:center;font-family:var(--font-display);font-weight:600;font-size:46px;line-height:1;font-variant-numeric:tabular-nums}
+.stepper output small{font-family:var(--font-ui);font-size:16px;color:var(--muted);margin-left:4px}
+.note{margin:0;font-size:13px;color:var(--muted)}
+
+/* windshield HUD */
+.hud{position:fixed;inset:0;z-index:40;display:grid;place-items:center;background:var(--hud-bg);color:var(--hud-ink);cursor:pointer}
+.hud-mirror{transform:scaleX(-1);display:flex;flex-direction:column;align-items:center}
+.hud-digits{font-family:var(--font-display);font-weight:600;font-size:min(66vw,72vh);line-height:.8;letter-spacing:-.01em;font-variant-numeric:tabular-nums;transition:color .3s,opacity .3s}
+.hud-unit{font-weight:600;font-size:min(8vw,7vh);opacity:.7;margin-top:1.5vh}
+.hud.over .hud-digits{color:var(--alert)}
+.hud.stale .hud-digits{opacity:.35}
+.hud-hint{position:absolute;margin:0;text-align:center;font-size:14px;opacity:.75;transition:opacity .8s;
+  left:max(16px,env(safe-area-inset-left,0px));right:max(16px,env(safe-area-inset-right,0px));bottom:max(24px,env(safe-area-inset-bottom,0px))}
+.hud-hint.gone{opacity:0}
+
+@media (display-mode: standalone){
+  body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--status-band);z-index:30}
+}
+@media (max-width: 359px){
+  .trip{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .stat:nth-child(3){border-left:0;padding-left:0}
+  .stat:nth-child(n+3){border-top:1px solid var(--line)}
+}
+/* tall screens (Home Screen app on larger iPhones): spend the spare height on bigger trip numbers */
+@media (orientation: portrait) and (min-height: 780px) and (min-width: 360px){
+  .trip{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .stat{padding-top:12px;padding-bottom:12px}
+  .stat:nth-child(3){border-left:0;padding-left:0}
+  .stat:nth-child(n+3){border-top:1px solid var(--line)}
+  .val{font-size:38px}
+  .val small{font-size:16px}
+  .ctl{min-height:60px}
+}
+@media (orientation: landscape) and (max-height: 560px){
+  .app{
+    max-width:none;
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+    grid-template-rows:auto minmax(0,1fr) auto auto;
+    grid-template-areas:"dial top" "dial trip" "dial meta" "dial controls";
+    column-gap:28px;row-gap:10px;
+  }
+  .trip{align-self:center}
+  .sheet-inner{max-width:640px}
+}
+@media (prefers-reduced-motion: reduce){
+  *{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <header class="top">
+    <div class="gps" id="gps" data-q="0">
+      <span class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <span id="gpsText">GPS off</span>
+    </div>
+    <button class="chip" id="themeBtn" type="button">Auto</button>
+  </header>
+
+  <main class="dial-wrap">
+    <div class="dial" id="dial">
+      <svg viewBox="0 0 400 340" aria-hidden="true">
+        <path id="track" class="track"/>
+        <path id="valueArc" class="value" pathLength="1000"/>
+        <g id="ticks"></g>
+        <g id="nums" class="nums"></g>
+        <line id="limitMark" class="limit-mark" x1="0" y1="0" x2="0" y2="0"/>
+        <path id="maxMark" class="max-mark"/>
+        <circle id="tip" class="tip" r="8" cx="0" cy="0"/>
+      </svg>
+      <div class="readout">
+        <div class="digits" id="speed" aria-live="off">0</div>
+        <button class="unit" id="unitBtn" type="button">km/h</button>
+      </div>
+      <div class="heading" id="heading">&mdash;</div>
+    </div>
+  </main>
+
+  <section class="trip" aria-label="Trip">
+    <div class="stat"><span class="label">Max</span><span class="val" id="maxVal">0</span></div>
+    <div class="stat"><span class="label">Avg</span><span class="val" id="avgVal">&mdash;</span></div>
+    <div class="stat"><span class="label">Trip</span><span class="val"><span id="distVal">0.00</span><small id="distUnit">km</small></span></div>
+    <div class="stat"><span class="label">Moving</span><span class="val" id="movingVal">0:00</span></div>
+  </section>
+  <p class="meta"><span id="altVal">Alt &mdash;</span><span id="srcVal">Waiting for GPS</span><span id="awakeVal"></span></p>
+
+  <nav class="controls" aria-label="Controls">
+    <button class="ctl" id="alertBtn" type="button"><span class="sign off" id="alertSign">100</span><span id="alertLabel">Alert off</span></button>
+    <button class="ctl" id="hudBtn" type="button" aria-label="Windshield HUD mode">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9.5c3-3.2 15-3.2 18 0"/><rect x="6.5" y="13" width="11" height="6" rx="1.5"/><path d="M12 13V9"/></svg>
+      <span>HUD</span>
+    </button>
+    <button class="ctl" id="resetBtn" type="button"><span id="resetLabel">Reset trip</span></button>
+  </nav>
+</div>
+
+<section class="sheet" id="startSheet" aria-labelledby="startTitle">
+  <div class="sheet-inner">
+    <h1 id="startTitle">GPS Speedometer</h1>
+    <p>Speed comes straight from your iPhone&rsquo;s GPS chip. Tap Start, then allow location. Works best with a view of the sky.</p>
+    <button class="primary" id="startBtn" type="button">Start</button>
+    <p class="hint" id="installHint" hidden>For a full-screen app with its own icon: tap <b>Share</b>, then <b>Add to Home Screen</b>.</p>
+  </div>
+</section>
+
+<section class="sheet" id="problemSheet" aria-labelledby="problemTitle" hidden>
+  <div class="sheet-inner">
+    <h1 id="problemTitle">Location is blocked</h1>
+    <div id="problemBody" class="sheet-inner"></div>
+    <button class="primary" id="reloadBtn" type="button">Reload</button>
+  </div>
+</section>
+
+<button class="banner" id="banner" type="button" hidden></button>
+
+<dialog id="alertDlg" aria-labelledby="alertTitle">
+  <form method="dialog">
+    <h2 id="alertTitle">Speed alert</h2>
+    <div class="row"><label for="alertOn">Warn me above</label><input class="switch" type="checkbox" id="alertOn"></div>
+    <div class="stepper">
+      <button type="button" id="limDown" aria-label="Lower the limit">&minus;</button>
+      <output id="limOut" for="limDown limUp"><span id="limVal">100</span><small id="limUnit">km/h</small></output>
+      <button type="button" id="limUp" aria-label="Raise the limit">+</button>
+    </div>
+    <div class="row"><label for="alertSound">Beep when over</label><input class="switch" type="checkbox" id="alertSound" checked></div>
+    <p class="note">The digits and arc turn red above the limit. If you hear no beep, check the ringer switch and volume.</p>
+    <button class="primary" id="alertDone" value="done">Done</button>
+  </form>
+</dialog>
+
+<div class="hud" id="hud" hidden>
+  <div class="hud-mirror">
+    <div class="hud-digits" id="hudSpeed">0</div>
+    <div class="hud-unit" id="hudUnit">km/h</div>
+  </div>
+  <p class="hud-hint" id="hudHint">Lay the phone flat on the dashboard, top edge toward you, and read the reflection in the windshield. Tap anywhere to exit.</p>
+</div>
+
+<noscript><p style="padding:16px">This speedometer needs JavaScript.</p></noscript>
+
+<script src="speed-core.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var root = document.documentElement;
+  var app = $('app'), hud = $('hud');
+  var speedEl = $('speed'), hudSpeedEl = $('hudSpeed');
+  var valueArc = $('valueArc'), tipEl = $('tip');
+  var core = SpeedCore.create();
+
+  var UNITS = {
+    kmh: { label: 'km/h', name: 'kilometres per hour', k: 3.6, dist: 0.001, distLabel: 'km', alt: 1, altLabel: 'm', ranges: [160, 240, 400, 1000], step: 5, maxLimit: 400 },
+    mph: { label: 'mph', name: 'miles per hour', k: 2.2369362920544, dist: 1 / 1609.344, distLabel: 'mi', alt: 3.280839895, altLabel: 'ft', ranges: [100, 160, 240, 600], step: 5, maxLimit: 240 },
+    kn:  { label: 'kn', name: 'knots', k: 1.9438444924406, dist: 1 / 1852, distLabel: 'nm', alt: 1, altLabel: 'm', ranges: [60, 120, 240, 600], step: 1, maxLimit: 240 }
+  };
+  var ORDER = ['kmh', 'mph', 'kn'];
+  var SCALES = { 60: [10, 2], 100: [10, 5], 120: [20, 5], 160: [20, 5], 240: [20, 10], 400: [50, 10], 600: [100, 20], 1000: [100, 50] };
+  var COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+  var STALE_S = 6;
+
+  /* ---------- settings and saved trip ---------- */
+  var settings = { unit: 'kmh', theme: 'auto', limit: 100, alertOn: false, sound: true };
+  try {
+    var saved = JSON.parse(localStorage.getItem('speedo.settings') || 'null');
+    if (saved && typeof saved === 'object') {
+      for (var key in settings) if (key in saved && typeof saved[key] === typeof settings[key]) settings[key] = saved[key];
+    }
+  } catch (e) {}
+  if (!UNITS[settings.unit]) settings.unit = 'kmh';
+  function saveSettings() { try { localStorage.setItem('speedo.settings', JSON.stringify(settings)); } catch (e) {} }
+
+  try {
+    var savedTrip = JSON.parse(localStorage.getItem('speedo.trip') || 'null');
+    if (savedTrip && Date.now() - savedTrip.savedAt < 12 * 3600 * 1000) core.restoreTrip(savedTrip);
+  } catch (e) {}
+  function saveTrip() {
+    try { var t = core.tripState(); t.savedAt = Date.now(); localStorage.setItem('speedo.trip', JSON.stringify(t)); } catch (e) {}
+  }
+
+  var snap = core.snapshot();
+  var started = false, firstFix = false, lastRecv = 0, gpsErr = null, coarseCount = 0, problem = null;
+
+  /* ---------- theme ---------- */
+  var THEME_LABEL = { auto: 'Auto', dark: 'Night', light: 'Day' };
+  var darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+  function applyTheme() {
+    if (settings.theme === 'auto') root.removeAttribute('data-theme');
+    else root.setAttribute('data-theme', settings.theme);
+    var btn = $('themeBtn');
+    btn.textContent = THEME_LABEL[settings.theme];
+    btn.setAttribute('aria-label', 'Colours: ' + THEME_LABEL[settings.theme] + '. Tap to change.');
+    var dark = settings.theme === 'dark' || (settings.theme === 'auto' && darkQuery.matches);
+    document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#0f0e0c' : '#f1f1ec');
+  }
+  if (darkQuery.addEventListener) darkQuery.addEventListener('change', applyTheme);
+  $('themeBtn').addEventListener('click', function () {
+    var order = ['auto', 'dark', 'light'];
+    settings.theme = order[(order.indexOf(settings.theme) + 1) % order.length];
+    saveSettings(); applyTheme();
+  });
+
+  /* ---------- dial geometry ---------- */
+  var NS = 'http://www.w3.org/2000/svg';
+  var CX = 200, CY = 200, R = 172, START = 150, SWEEP = 240;
+  function pt(r, f) { var a = (START + SWEEP * f) * Math.PI / 180; return [CX + r * Math.cos(a), CY + r * Math.sin(a)]; }
+  function n2(x) { return x.toFixed(2); }
+  (function () {
+    var a = pt(R, 0), b = pt(R, 1);
+    var d = 'M' + n2(a[0]) + ' ' + n2(a[1]) + ' A' + R + ' ' + R + ' 0 1 1 ' + n2(b[0]) + ' ' + n2(b[1]);
+    $('track').setAttribute('d', d);
+    valueArc.setAttribute('d', d);
+  })();
+
+  var range = 0;
+  function buildScale(r) {
+    range = r;
+    var spec = SCALES[r], major = spec[0], minor = spec[1];
+    var ticks = $('ticks'), nums = $('nums');
+    ticks.textContent = ''; nums.textContent = '';
+    for (var v = 0; v <= r + 1e-9; v += minor) {
+      var f = v / r;
+      var isMajor = Math.abs(v / major - Math.round(v / major)) < 1e-6;
+      var a = pt(isMajor ? 141 : 149, f), b = pt(158, f);
+      var ln = document.createElementNS(NS, 'line');
+      ln.setAttribute('x1', n2(a[0])); ln.setAttribute('y1', n2(a[1]));
+      ln.setAttribute('x2', n2(b[0])); ln.setAttribute('y2', n2(b[1]));
+      ln.setAttribute('class', isMajor ? 'tick major' : 'tick');
+      ticks.appendChild(ln);
+      if (isMajor) {
+        var p = pt(122, f), tx = document.createElementNS(NS, 'text');
+        tx.setAttribute('x', n2(p[0])); tx.setAttribute('y', n2(p[1]));
+        tx.textContent = String(Math.round(v));
+        nums.appendChild(tx);
+      }
+    }
+    placeMarks();
+    drawSpeed();
+  }
+  function pickRange(units) {
+    var list = UNITS[settings.unit].ranges;
+    for (var i = 0; i < list.length; i++) if (units <= list[i] * 0.92) return list[i];
+    return list[list.length - 1];
+  }
+  function ensureRange() {
+    var u = UNITS[settings.unit];
+    var need = pickRange(Math.max(target, snap.max) * u.k);
+    if (need > range) buildScale(need); // grow only, so the scale never jumps back mid-trip
+  }
+  function placeMarks() {
+    var u = UNITS[settings.unit];
+    var mm = $('maxMark'), maxU = snap.max * u.k;
+    if (maxU >= 1 && range) {
+      var f = Math.min(1, maxU / range);
+      var t = pt(181, f), l = pt(195, f - 0.013), r = pt(195, f + 0.013);
+      mm.setAttribute('d', 'M' + n2(t[0]) + ' ' + n2(t[1]) + ' L' + n2(l[0]) + ' ' + n2(l[1]) + ' L' + n2(r[0]) + ' ' + n2(r[1]) + ' Z');
+    } else {
+      mm.setAttribute('d', 'M0 0');
+    }
+    var lm = $('limitMark');
+    if (settings.alertOn && range && settings.limit <= range) {
+      var fl = settings.limit / range, a = pt(160, fl), b = pt(186, fl);
+      lm.setAttribute('x1', n2(a[0])); lm.setAttribute('y1', n2(a[1]));
+      lm.setAttribute('x2', n2(b[0])); lm.setAttribute('y2', n2(b[1]));
+      lm.style.display = '';
+    } else {
+      lm.style.display = 'none';
+    }
+  }
+
+  /* ---------- needle and digits animation ---------- */
+  var target = 0, disp = 0, shownInt = 0, rafId = 0, lastTs = 0;
+  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  function kick() { if (!rafId) { lastTs = 0; rafId = requestAnimationFrame(frame); } }
+  function frame(ts) {
+    rafId = 0;
+    var dt = lastTs ? Math.min(0.1, (ts - lastTs) / 1000) : 1 / 60;
+    lastTs = ts;
+    var a = reduceMotion.matches ? 1 : 1 - Math.exp(-dt / 0.22);
+    disp += (target - disp) * a;
+    if (Math.abs(target - disp) < 0.005) disp = target;
+    drawSpeed();
+    if (disp !== target) rafId = requestAnimationFrame(frame);
+  }
+  function drawSpeed() {
+    var u = UNITS[settings.unit];
+    var val = disp * u.k;
+    // Hysteresis: the integer only changes once the value is 0.7 away, so it never flickers between two numbers.
+    if (Math.abs(val - shownInt) >= 0.7 || (disp === 0 && shownInt !== 0)) {
+      shownInt = disp === 0 ? 0 : Math.round(val);
+      speedEl.textContent = shownInt;
+      hudSpeedEl.textContent = shownInt;
+      speedEl.classList.toggle('three', shownInt >= 100 && shownInt < 1000);
+      speedEl.classList.toggle('four', shownInt >= 1000);
+    }
+    if (!range) return;
+    var f = Math.max(0, Math.min(1, val / range));
+    valueArc.style.strokeDasharray = (1000 * f).toFixed(1) + ' 1000';
+    var p = pt(R, f);
+    tipEl.setAttribute('cx', n2(p[0]));
+    tipEl.setAttribute('cy', n2(p[1]));
+  }
+
+  /* ---------- readouts ---------- */
+  function pad2(n) { return n < 10 ? '0' + n : String(n); }
+  function fmtDuration(s) {
+    s = Math.floor(s);
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return h ? h + ':' + pad2(m) + ':' + pad2(sec) : m + ':' + pad2(sec);
+  }
+  function fmtDist(d) { return d < 10 ? d.toFixed(2) : d < 100 ? d.toFixed(1) : String(Math.round(d)); }
+  function renderTrip() {
+    var u = UNITS[settings.unit];
+    $('maxVal').textContent = Math.round(snap.max * u.k);
+    $('avgVal').textContent = snap.movingTime >= 10 ? Math.round(snap.average * u.k) : '—';
+    $('distVal').textContent = fmtDist(snap.distance * u.dist);
+    $('distUnit').textContent = u.distLabel;
+    $('movingVal').textContent = fmtDuration(snap.movingTime);
+    $('altVal').textContent = snap.altitude == null ? 'Alt —' : 'Alt ' + Math.round(snap.altitude * u.alt) + ' ' + u.altLabel;
+    $('srcVal').textContent = !started ? 'Waiting for GPS'
+      : !firstFix ? 'Waiting for first fix'
+      : snap.source === 'doppler' ? 'Doppler speed'
+      : snap.source === 'position' ? 'Position speed, less precise'
+      : 'Measuring';
+    var h = $('heading');
+    if (snap.heading == null) h.textContent = '—';
+    else {
+      var deg = Math.round(snap.heading) % 360;
+      h.textContent = COMPASS[Math.round(deg / 22.5) % 16] + ' ' + ('00' + deg).slice(-3) + '°';
+    }
+    h.classList.toggle('dim', snap.speed < 1);
+  }
+  function quality(acc) { return acc <= 5 ? 4 : acc <= 10 ? 3 : acc <= 20 ? 2 : acc <= 50 ? 1 : 0; }
+  function isStale() { return started && firstFix && (Date.now() - lastRecv) / 1000 > STALE_S; }
+  function renderStatus() {
+    var g = $('gps'), txt, q = 0, bad = false, stale = isStale();
+    if (problem === 'denied') { txt = 'Location blocked'; bad = true; }
+    else if (!started) txt = 'GPS off';
+    else if (!firstFix) txt = gpsErr === 2 ? 'No GPS signal yet' : 'Finding GPS…';
+    else if (stale) { txt = 'No signal · ' + Math.round((Date.now() - lastRecv) / 1000) + ' s'; bad = true; }
+    else if (coarseCount >= 3) { txt = 'Approximate location only'; bad = true; }
+    else { q = quality(snap.accuracy); txt = 'GPS ±' + Math.round(snap.accuracy) + ' m'; bad = q <= 1; }
+    g.setAttribute('data-q', q);
+    g.classList.toggle('bad', bad);
+    $('gpsText').textContent = txt;
+    app.classList.toggle('stale', stale);
+    hud.classList.toggle('stale', stale);
+  }
+  setInterval(renderStatus, 1000);
+
+  /* ---------- speed alert ---------- */
+  var over = false, lastBeep = 0, audioCtx = null;
+  function unlockAudio() {
+    try {
+      if (!audioCtx) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        audioCtx = new AC();
+      }
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      var buf = audioCtx.createBuffer(1, 1, 22050), src = audioCtx.createBufferSource();
+      src.buffer = buf; src.connect(audioCtx.destination); src.start(0);
+    } catch (e) {}
+  }
+  function beep() {
+    if (!audioCtx) return;
+    try {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      var t0 = audioCtx.currentTime + 0.02;
+      [0, 0.2].forEach(function (off) {
+        var osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 1568;
+        gain.gain.setValueAtTime(0.0001, t0 + off);
+        gain.gain.exponentialRampToValueAtTime(0.35, t0 + off + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + off + 0.14);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(t0 + off); osc.stop(t0 + off + 0.16);
+      });
+    } catch (e) {}
+  }
+  function checkAlert() {
+    var s = Math.round(snap.speed * UNITS[settings.unit].k);
+    var nowOver = settings.alertOn && !isStale() && (over ? s >= settings.limit : s > settings.limit);
+    if (nowOver && !over) lastBeep = 0;
+    over = nowOver;
+    app.classList.toggle('over', over);
+    hud.classList.toggle('over', over);
+    if (over && settings.sound && Date.now() - lastBeep > 8000) { beep(); lastBeep = Date.now(); }
+  }
+  function renderAlertUI() {
+    var u = UNITS[settings.unit];
+    $('alertSign').textContent = settings.limit;
+    $('alertSign').classList.toggle('off', !settings.alertOn);
+    $('alertLabel').textContent = settings.alertOn ? 'Alert on' : 'Alert off';
+    $('alertBtn').setAttribute('aria-label', 'Speed alert ' + (settings.alertOn ? 'on' : 'off') + ', limit ' + settings.limit + ' ' + u.label);
+    $('limVal').textContent = settings.limit;
+    $('limUnit').textContent = u.label;
+    $('alertOn').checked = settings.alertOn;
+    $('alertSound').checked = settings.sound;
+    placeMarks();
+  }
+  function stepLimit(dir) {
+    var u = UNITS[settings.unit];
+    settings.limit = Math.min(u.maxLimit, Math.max(u.step, settings.limit + dir * u.step));
+    settings.alertOn = true;
+    saveSettings(); renderAlertUI(); checkAlert();
+  }
+  $('alertBtn').addEventListener('click', function () {
+    unlockAudio();
+    var d = $('alertDlg');
+    if (typeof d.showModal === 'function') d.showModal(); else d.setAttribute('open', '');
+  });
+  $('alertDlg').addEventListener('click', function (e) {
+    var r = this.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) this.close();
+  });
+  $('limDown').addEventListener('click', function () { stepLimit(-1); });
+  $('limUp').addEventListener('click', function () { stepLimit(1); });
+  $('alertOn').addEventListener('change', function (e) { settings.alertOn = e.target.checked; saveSettings(); renderAlertUI(); checkAlert(); });
+  $('alertSound').addEventListener('change', function (e) {
+    settings.sound = e.target.checked; saveSettings();
+    if (settings.sound) { unlockAudio(); beep(); }
+  });
+
+  /* ---------- units ---------- */
+  function applyUnit() {
+    var u = UNITS[settings.unit];
+    $('unitBtn').textContent = u.label;
+    $('unitBtn').setAttribute('aria-label', 'Unit: ' + u.name + '. Tap to change.');
+    $('hudUnit').textContent = u.label;
+    shownInt = -1;
+    buildScale(pickRange(Math.max(target, snap.max) * u.k));
+    renderTrip(); renderAlertUI();
+  }
+  $('unitBtn').addEventListener('click', function () {
+    var old = UNITS[settings.unit];
+    settings.unit = ORDER[(ORDER.indexOf(settings.unit) + 1) % ORDER.length];
+    var nu = UNITS[settings.unit];
+    settings.limit = Math.min(nu.maxLimit, Math.max(nu.step, Math.round(settings.limit / old.k * nu.k / nu.step) * nu.step));
+    saveSettings(); applyUnit(); checkAlert();
+  });
+
+  /* ---------- keep the screen on ---------- */
+  var wakeLock = null, awakeState = '';
+  function keepAwake() {
+    if (!('wakeLock' in navigator)) { awakeState = 'unsupported'; renderAwake(); return; }
+    if (wakeLock || document.visibilityState !== 'visible') return;
+    navigator.wakeLock.request('screen').then(function (lock) {
+      wakeLock = lock; awakeState = 'on'; renderAwake();
+      lock.addEventListener('release', function () { wakeLock = null; awakeState = ''; renderAwake(); });
+    }).catch(function () { awakeState = 'failed'; renderAwake(); });
+  }
+  function renderAwake() {
+    $('awakeVal').textContent = !started ? ''
+      : awakeState === 'on' ? 'Screen stays on'
+      : (awakeState === 'unsupported' || awakeState === 'failed') ? 'Set Auto-Lock to Never to keep the screen on'
+      : '';
+  }
+
+  /* ---------- GPS ---------- */
+  var watchId = null;
+  var GEO_OPTS = { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 };
+  function watch() {
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = navigator.geolocation.watchPosition(onPos, onErr, GEO_OPTS);
+  }
+  function onPos(pos) {
+    var c = pos.coords, t = pos.timestamp;
+    if (!t || Math.abs(t - Date.now()) > 120000) t = Date.now();
+    snap = core.ingest({ t: t, lat: c.latitude, lon: c.longitude, acc: c.accuracy, speed: c.speed, heading: c.heading, altitude: c.altitude });
+    lastRecv = Date.now();
+    firstFix = true; gpsErr = null;
+    coarseCount = c.accuracy > 1000 ? coarseCount + 1 : 0;
+    if (coarseCount === 3) showBanner('Your iPhone is sharing <b>approximate</b> location, so speed can’t be measured. Turn on <b>Precise Location</b>: Settings → Privacy &amp; Security → Location Services → Safari Websites. Tap to close.');
+    target = snap.speed;
+    ensureRange();
+    placeMarks();
+    renderTrip(); renderStatus(); checkAlert();
+    kick();
+  }
+  function onErr(err) {
+    if (err.code === 1) {
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      watchId = null; started = false;
+      showProblem('denied');
+    } else {
+      gpsErr = err.code; // 2 = no fix yet, 3 = timeout; the watch keeps running
+      renderStatus();
+    }
+  }
+  var PROBLEMS = {
+    denied: {
+      title: 'Location is blocked',
+      body: '<p>The speedometer needs your location to measure speed.</p>' +
+        '<ol><li>Open <b>Settings → Privacy &amp; Security → Location Services</b> and make sure it is on.</li>' +
+        '<li>Tap <b>Safari Websites</b>, choose <b>While Using the App</b>, and turn on <b>Precise Location</b>.</li>' +
+        '<li>Come back here and tap <b>Reload</b>, then Start.</li></ol>' +
+        '<p>In Safari you can also tap <b>aA → Website Settings → Location → Allow</b>. Opened this inside another app? Open the link in Safari.</p>'
+    },
+    insecure: { title: 'Open the secure link', body: '<p>Location only works on an https:// address. Open the https version of this page.</p>' },
+    nogeo: { title: 'No location in this browser', body: '<p>This browser does not offer location. Open the page in Safari.</p>' }
+  };
+  function showProblem(kind) {
+    problem = kind;
+    var p = PROBLEMS[kind];
+    $('problemTitle').textContent = p.title;
+    $('problemBody').innerHTML = p.body;
+    $('startSheet').hidden = true;
+    $('problemSheet').hidden = false;
+    renderStatus(); renderTrip(); renderAwake();
+  }
+  $('reloadBtn').addEventListener('click', function () { location.reload(); });
+
+  function showBanner(html) { var b = $('banner'); b.innerHTML = html; b.hidden = false; }
+  $('banner').addEventListener('click', function () { this.hidden = true; });
+
+  function start() {
+    unlockAudio();
+    if (!window.isSecureContext) return showProblem('insecure');
+    if (!('geolocation' in navigator)) return showProblem('nogeo');
+    started = true; problem = null;
+    try { localStorage.setItem('speedo.started', '1'); } catch (e) {}
+    $('startSheet').hidden = true;
+    $('problemSheet').hidden = true;
+    keepAwake();
+    watch();
+    renderStatus(); renderTrip(); renderAwake();
+  }
+  $('startBtn').addEventListener('click', start);
+
+  function maybeAutoStart() {
+    var before = false;
+    try { before = localStorage.getItem('speedo.started') === '1'; } catch (e) {}
+    if (!before || !navigator.permissions || !navigator.permissions.query) return;
+    navigator.permissions.query({ name: 'geolocation' }).then(function (p) {
+      if (p.state === 'granted' && !started) start();
+    }).catch(function () {});
+  }
+
+  document.addEventListener('pointerdown', function () {
+    unlockAudio();
+    if (started && !wakeLock) keepAwake();
+  }, { passive: true });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') {
+      if (started) { keepAwake(); watch(); }
+    } else {
+      saveTrip();
+    }
+  });
+  window.addEventListener('pagehide', saveTrip);
+  setInterval(function () { if (started) saveTrip(); }, 5000);
+
+  /* ---------- trip reset (two taps, so a bump can't wipe it) ---------- */
+  var resetTimer = 0;
+  function disarm() {
+    clearTimeout(resetTimer); resetTimer = 0;
+    $('resetBtn').classList.remove('armed');
+    $('resetLabel').textContent = 'Reset trip';
+  }
+  $('resetBtn').addEventListener('click', function () {
+    if (!resetTimer) {
+      resetTimer = setTimeout(disarm, 3000);
+      $('resetBtn').classList.add('armed');
+      $('resetLabel').textContent = 'Tap to confirm';
+      return;
+    }
+    disarm();
+    snap = core.resetTrip();
+    saveTrip();
+    buildScale(pickRange(target * UNITS[settings.unit].k));
+    renderTrip();
+  });
+
+  /* ---------- windshield HUD ---------- */
+  var hintTimer = 0;
+  $('hudBtn').addEventListener('click', function () {
+    hud.hidden = false;
+    if (started) keepAwake();
+    var hint = $('hudHint');
+    hint.classList.remove('gone');
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(function () { hint.classList.add('gone'); }, 6000);
+  });
+  hud.addEventListener('click', function () { hud.hidden = true; });
+
+  /* ---------- boot ---------- */
+  var ua = navigator.userAgent;
+  var isIOS = /iP(hone|od|ad)/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var standalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+  $('installHint').hidden = !(isIOS && !standalone);
+
+  applyTheme();
+  applyUnit();
+  renderStatus();
+  renderAwake();
+  maybeAutoStart();
+
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+  }
+})();
+</script>
+</body>
+</html>
